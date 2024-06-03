@@ -1,30 +1,46 @@
-from pytube import YouTube
-import os
 import threading
-import time
+import os
+from pytube import YouTube
 
-def baixar_video(url, pasta_saida):
+# Semáforo para garantir exclusão mútua ao acessar a lista de links
+link_semaphore = threading.Semaphore()
+
+# Semáforo para garantir que apenas uma thread por vez baixe um vídeo ou música
+download_semaphore = threading.Semaphore()
+
+# Semáforo adicional para alternar entre as threads de download
+alternancia_semaphore = threading.Semaphore(1)  # Inicializado com 1 para permitir apenas uma thread por vez
+
+
+def baixar_video(url, pasta_saida, alternancia_semaphore):
     yt = YouTube(url)
     video = yt.streams.get_highest_resolution()
-    video.download(pasta_saida)
+    with download_semaphore:
+        video.download(pasta_saida)
     print(f"Download do vídeo '{yt.title}' completo!")
+    # Liberando o semáforo de alternância para permitir a próxima thread de download
+    alternancia_semaphore.release()
+
 
 def baixar_videos(urls, pasta_saida):
-    metade = len(urls) // 2
     threads = []
+    metade = len(urls) // 2
 
     for url in urls[:metade]:
-        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida))
+        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida, alternancia_semaphore))
         threads.append(thread)
         thread.start()
 
     for url in urls[metade:]:
-        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida))
+        # Adquirindo o semáforo de alternância antes de iniciar a thread de download
+        alternancia_semaphore.acquire()
+        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida, alternancia_semaphore))
         threads.append(thread)
         thread.start()
 
     for thread in threads:
         thread.join()
+
 
 def baixando_videos():
     print("Bem-vindo ao assistente de download de vídeos")
@@ -32,7 +48,7 @@ def baixando_videos():
     urls = []
 
     for i in range(num_videos):
-        url = input(f"Insira o URL do vídeo {i+1}: ")
+        url = input(f"Insira o URL do vídeo {i + 1}: ")
         urls.append(url)
 
     projeto_path = os.path.dirname(os.path.abspath(__file__))
@@ -44,8 +60,11 @@ def baixando_videos():
     if not os.path.exists(video_path):
         os.makedirs(video_path)
 
-    baixar_videos(urls, video_path)
+    with link_semaphore:
+        baixar_videos(urls, video_path)
+
     print("Todos os downloads foram concluídos!")
+
 
 def baixar_musica(url, pasta_saida):
     yt = YouTube(url)
@@ -96,7 +115,9 @@ def Sobre():
     print("\n=============SOBRE===========")
     print("Trabalho realizado por:")
     print("Jonathan dos Santos")
-    print("Os outros")
+    print("João Batista")
+    print("Matheus Rikelmy")
+    print("Henrique dos Santos")
     print("============================")
 
 def subMenu():
@@ -134,6 +155,9 @@ def menuImagem():
     print("[3] Converter Formato de Imagem")
     print("[0] Retornar ao Menu Anterior")
     print("============================")
+
+
+
 
 
 
