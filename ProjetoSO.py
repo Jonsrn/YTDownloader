@@ -1,250 +1,247 @@
+import sys
 import threading
 import os
+import time
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QProgressBar, QLineEdit, QLabel, QListWidget, QMessageBox
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QIcon
 from pytube import YouTube
+from moviepy.editor import AudioFileClip
+import pygame
 
-# Semáforo para garantir exclusão mútua ao acessar a lista de links
-link_semaphore = threading.Semaphore()
+class DownloadThread(QThread):
+    progresso = pyqtSignal(int)
+    status_message = pyqtSignal(str)
 
-# Semáforo para garantir que apenas uma thread por vez baixe um vídeo ou música
-download_semaphore = threading.Semaphore()
+    def __init__(self, urls, output_path, parent=None):
+        super(DownloadThread, self).__init__(parent)
+        self.urls = urls
+        self.output_path = output_path
 
-# Semáforo adicional para alternar entre as threads de download
-alternancia_semaphore = threading.Semaphore(1)  # Inicializado com 1 para permitir apenas uma thread por vez
+    def run(self):
+        total = len(self.urls)
+        for i, url in enumerate(self.urls):
+            yt = YouTube(url)
+            video = yt.streams.get_highest_resolution()
+            self.status_message.emit(f"Baixando: {yt.title}")
+            video.download(self.output_path)
+            self.progresso.emit(int((i + 1) / total * 100))
+        self.status_message.emit("Download Concluído")
+        time.sleep(2)  # Espera 2 segundos com a barra cheia
+        self.progresso.emit(0)  # Reseta a barra de progresso
 
+class ConverterThread(QThread):
+    progresso = pyqtSignal(int)
+    status_message = pyqtSignal(str)
 
-def baixar_video(url, pasta_saida, alternancia_semaphore):
-    yt = YouTube(url)
-    video = yt.streams.get_highest_resolution()
-    with download_semaphore:
-        video.download(pasta_saida)
-    print(f"Download do vídeo '{yt.title}' completo!")
-    # Liberando o semáforo de alternância para permitir a próxima thread de download
-    alternancia_semaphore.release()
+    def __init__(self, input_path, output_path, parent=None):
+        super(ConverterThread, self).__init__(parent)
+        self.input_path = input_path
+        self.output_path = output_path
 
+    def run(self):
+        videos = [f for f in os.listdir(self.input_path) if f.endswith('.mp4')]
+        total = len(videos)
+        for i, video in enumerate(videos):
+            video_path = os.path.join(self.input_path, video)
+            audio_path = os.path.join(self.output_path, os.path.splitext(video)[0] + '.mp3')
+            self.status_message.emit(f"Convertendo: {video}")
+            audio_clip = AudioFileClip(video_path)
+            audio_clip.write_audiofile(audio_path)
+            os.remove(video_path)
+            self.progresso.emit(int((i + 1) / total * 100))
+        self.status_message.emit("Conversão Concluída")
+        time.sleep(2)  # Espera 2 segundos com a barra cheia
+        self.progresso.emit(0)  # Reseta a barra de progresso
 
-def baixar_videos(urls, pasta_saida):
-    threads = []
-    metade = len(urls) // 2
+class Player(QThread):
+    progress_update = pyqtSignal(int)
+    status_message = pyqtSignal(str)
 
-    for url in urls[:metade]:
-        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida, alternancia_semaphore))
-        threads.append(thread)
-        thread.start()
+    def __init__(self, audio_path):
+        super(Player, self).__init__()
+        self.audio_path = audio_path
+        pygame.mixer.init()
+        self.current_file = None
+        self.total_length = 0
 
-    for url in urls[metade:]:
-        # Adquirindo o semáforo de alternância antes de iniciar a thread de download
-        alternancia_semaphore.acquire()
-        thread = threading.Thread(target=baixar_video, args=(url, pasta_saida, alternancia_semaphore))
-        threads.append(thread)
-        thread.start()
+    def play_audio(self, audio_file):
+        audio_path = os.path.join(self.audio_path, audio_file)
+        pygame.mixer.music.load(audio_path)
+        pygame.mixer.music.play()
+        self.current_file = audio_file
+        self.total_length = AudioFileClip(audio_path).duration
+        self.status_message.emit(f"Tocando: {audio_file}")
+        self.start()
 
-    for thread in threads:
-        thread.join()
+    def pause_audio(self):
+        pygame.mixer.music.pause()
+        self.status_message.emit("Pausado")
 
+    def unpause_audio(self):
+        pygame.mixer.music.unpause()
+        self.status_message.emit("Continuando")
 
-def baixando_videos():
-    print("Bem-vindo ao assistente de download de vídeos")
-    num_videos = int(input("Quantos vídeos você deseja baixar? "))
-    urls = []
+    def run(self):
+        while pygame.mixer.music.get_busy():
+            pos = pygame.mixer.music.get_pos() // 1000
+            self.progress_update.emit(int((pos / self.total_length) * 100))
+            time.sleep(1)
 
-    for i in range(num_videos):
-        url = input(f"Insira o URL do vídeo {i + 1}: ")
-        urls.append(url)
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Gerenciador de Downloads')
+        self.setGeometry(100, 100, 600, 500)
+        self.initUI()
 
-    projeto_path = os.path.dirname(os.path.abspath(__file__))
-    saida_path = os.path.join(projeto_path, "saida")
-    if not os.path.exists(saida_path):
-        os.makedirs(saida_path)
+    def initUI(self):
+        self.download_thread = None
+        self.converter_thread = None
+        self.player = None
 
-    video_path = os.path.join(saida_path, "Vídeo")
-    if not os.path.exists(video_path):
-        os.makedirs(video_path)
+        layout = QVBoxLayout()
 
-    with link_semaphore:
-        baixar_videos(urls, video_path)
+        self.url_input = QLineEdit(self)
+        self.url_input.setPlaceholderText('Insira a URL do vídeo...')
+        layout.addWidget(self.url_input)
 
-    print("Todos os downloads foram concluídos!")
+        self.add_url_button = QPushButton('Adicionar URL', self)
+        self.add_url_button.clicked.connect(self.add_url)
+        layout.addWidget(self.add_url_button)
 
+        self.url_list = QListWidget(self)
+        layout.addWidget(self.url_list)
 
-def baixar_musica(url, pasta_saida):
-    yt = YouTube(url)
-    musica = yt.streams.filter(only_audio=True).first()
-    musica.download(pasta_saida)
-    print(f"Download da música '{yt.title}' completo!")
+        self.download_button = QPushButton('Baixar Vídeos', self)
+        self.download_button.clicked.connect(self.download_videos)
+        layout.addWidget(self.download_button)
 
-def baixar_musicas():
-    print("Bem-vindo ao assistente de download de músicas")
-    num_musicas = int(input("Quantas músicas você deseja baixar? "))
-    urls = []
+        self.download_progress = QProgressBar(self)
+        layout.addWidget(self.download_progress)
 
-    for i in range(num_musicas):
-        url = input(f"Insira o URL da música {i+1}: ")
-        urls.append(url)
+        self.download_status = QLabel(self)
+        layout.addWidget(self.download_status)
 
-    pasta_atual = os.path.dirname(os.path.abspath(__file__))
-    pasta_musica = os.path.join(pasta_atual, "saida", "Música")
+        self.convert_button = QPushButton('Converter para MP3', self)
+        self.convert_button.clicked.connect(self.convert_videos)
+        layout.addWidget(self.convert_button)
 
-    if not os.path.exists(pasta_musica):
-        os.makedirs(pasta_musica)
+        self.convert_progress = QProgressBar(self)
+        layout.addWidget(self.convert_progress)
 
-    metade = len(urls) // 2
-    threads = []
+        self.convert_status = QLabel(self)
+        layout.addWidget(self.convert_status)
 
-    for url in urls[:metade]:
-        thread = threading.Thread(target=baixar_musica, args=(url, pasta_musica))
-        threads.append(thread)
-        thread.start()
+        self.audio_list = QListWidget(self)
+        layout.addWidget(self.audio_list)
 
-    for url in urls[metade:]:
-        thread = threading.Thread(target=baixar_musica, args=(url, pasta_musica))
-        threads.append(thread)
-        thread.start()
+        self.play_button = QPushButton('Reproduzir', self)
+        self.play_button.clicked.connect(self.play_audio)
+        layout.addWidget(self.play_button)
 
-    for thread in threads:
-        thread.join()
+        self.pause_button = QPushButton('Pausar', self)
+        self.pause_button.clicked.connect(self.pause_audio)
+        layout.addWidget(self.pause_button)
 
+        self.unpause_button = QPushButton('Continuar', self)
+        self.unpause_button.clicked.connect(self.unpause_audio)
+        layout.addWidget(self.unpause_button)
 
-def menuPrincipal():
-    print("\n=============MENU===========")
-    print("Bem vindo ao Programa de Download e conversão de vídeos")
-    print("[1] Iniciar")
-    print("[2] Sobre")
-    print("[0] Encerrar Programa")
-    print("============================")
-def Sobre():
-    print("\n=============SOBRE===========")
-    print("Trabalho realizado por:")
-    print("Jonathan dos Santos")
-    print("João Batista")
-    print("Matheus Rikelmy")
-    print("Henrique dos Santos")
-    print("============================")
+        self.play_progress = QProgressBar(self)
+        self.play_progress.setStyleSheet("QProgressBar { text-align: center; } QProgressBar::chunk { background-color: #05B8CC; }")
+        layout.addWidget(self.play_progress)
 
-def subMenu():
-    print("\n=============MENU===========")
-    print("Selecione a categoria que deseja trabalhar")
-    print("[1] Vídeo")
-    print("[2] Audio")
-    print("[3] Imagem")
-    print("[0] Retornar ao Menu Principal")
-    print("============================")
+        self.play_status = QLabel(self)
+        layout.addWidget(self.play_status)
 
-def menuVideo():
-    print("\n=============VÍDEO===========")
-    print("Selecione a operação que deseja realizar")
-    print("[1] Baixar Vídeo do Youtube")
-    print("[2] Conversão de Formato")
-    print("[3] Renderizar Vídeo")
-    print("[0] Retornar ao Menu Anterior")
-    print("============================")
+        widget = QWidget()
+        widget.setLayout(layout)
+        self.setCentralWidget(widget)
 
-def menuAudio():
-    print("\n=============AUDIO===========")
-    print("Selecione a operação que deseja realizar")
-    print("[1] Baixar Audio do Youtube")
-    print("[2] Montar uma playlist")
-    print("[3] Reproduzir Música")
-    print("[0] Retornar ao Menu Anterior")
-    print("============================")
+        self.init_directories()
+        self.load_audio_files()
 
-def menuImagem():
-    print("\n=============IMAGEM===========")
-    print("Selecione a operação que deseja realizar")
-    print("[1] Baixar Imagem Especifica do Google")
-    print("[2] Procurar e Baixar Imagem")
-    print("[3] Converter Formato de Imagem")
-    print("[0] Retornar ao Menu Anterior")
-    print("============================")
+    def init_directories(self):
+        projeto_path = os.path.dirname(os.path.abspath(__file__))
+        self.saida_path = os.path.join(projeto_path, "saida")
+        self.video_path = os.path.join(self.saida_path, "Vídeo")
+        self.audio_path = os.path.join(self.saida_path, "Áudio")
 
+        os.makedirs(self.video_path, exist_ok=True)
+        os.makedirs(self.audio_path, exist_ok=True)
 
+    def add_url(self):
+        url = self.url_input.text()
+        if url:
+            self.url_list.addItem(url)
+            self.url_input.clear()
 
+    def download_videos(self):
+        urls = [self.url_list.item(i).text() for i in range(self.url_list.count())]
+        if urls:
+            self.download_thread = DownloadThread(urls, self.video_path)
+            self.download_thread.progresso.connect(self.update_download_progress)
+            self.download_thread.status_message.connect(self.update_download_status)
+            self.download_thread.finished.connect(self.clear_url_list)
+            self.download_thread.start()
 
+    def clear_url_list(self):
+        self.url_list.clear()
 
+    def update_download_progress(self, value):
+        self.download_progress.setValue(value)
 
-while True:
-    try:
-       menuPrincipal()
-       escolha = int(input("Sua Escolha: "))
-       if (escolha == 1):
-           while True:
-               try:
-                 subMenu()
-                 escolha1 = int(input("Sua escolha: "))
-                 if (escolha1 == 1):
-                     while True:
-                        try:
-                           menuVideo()
-                           escolha2 = int(input("Sua escolha: "))
+    def update_download_status(self, message):
+        self.download_status.setText(message)
+        if message == "Download Concluído":
+            self.load_audio_files()
 
-                           if (escolha2 == 1):
-                              #Baixar video do yt
-                              baixando_videos()
-                              print("")
-                           if (escolha2 == 2):
-                              #Conversão de formato
-                              print("")
-                           if (escolha2 == 3):
-                              #renderizar video
-                              print("")
-                           if (escolha2 == 0):
-                               print("Retornando...")
-                               break
-                        except:
-                            print("Entrada inválida, tente novamente")
-                 if (escolha1 == 2):
-                     while True:
-                         try:
-                            menuAudio()
-                            escolha3 = int(input("Sua escolha: "))
+    def convert_videos(self):
+        self.converter_thread = ConverterThread(self.video_path, self.audio_path)
+        self.converter_thread.progresso.connect(self.update_convert_progress)
+        self.converter_thread.status_message.connect(self.update_convert_status)
+        self.converter_thread.start()
 
-                            if (escolha3 == 1):
-                               #Baixar Audio do Youtube
-                               baixar_musicas()
-                               print("")
-                            if (escolha3 == 2):
-                               #Montar Playlist
-                               print("")
-                            if (escolha3 == 3):
-                               #Reproduzir Música
-                               print("")
-                            if (escolha3 == 0):
-                                print("Retornando...")
-                                break
-                         except:
-                             print("Entrada inválida, tente novamente")
+    def update_convert_progress(self, value):
+        self.convert_progress.setValue(value)
 
-                 if (escolha1 == 3):
-                     while True:
-                         try:
-                             menuImagem()
-                             escolha4 = int(input("Sua escolha: "))
+    def update_convert_status(self, message):
+        self.convert_status.setText(message)
+        if message == "Conversão Concluída":
+            self.load_audio_files()
 
-                             if(escolha4 == 1):
-                                 #baixar imagem especifica do google
-                                 print("")
-                             if (escolha4 == 2):
-                                 #pesquisar imagem por tag
-                                 print("")
-                             if (escolha4 == 3):
-                                 #Converter formato de Imagem
-                                 print("")
-                             if (escolha4 == 0):
-                                 print("Retornando...")
-                                 break
-                         except:
-                             print("Entrada inválida, tente novamente")
+    def load_audio_files(self):
+        if self.audio_path:
+            self.audio_list.clear()
+            audios = [f for f in os.listdir(self.audio_path) if f.endswith('.mp3')]
+            for audio in audios:
+                self.audio_list.addItem(audio)
+            self.player = Player(self.audio_path)
+            self.player.progress_update.connect(self.update_play_progress)
+            self.player.status_message.connect(self.update_play_status)
 
-                 if (escolha1 == 0):
-                     print("Retornando ao Menu Principal")
-                     break
-               except:
-                   print("Entrada inválida, tente novamente")
-       if (escolha == 2):
-           Sobre()
-           time.sleep(3)
-       if (escolha == 0):
-           print("Encerrando Programa")
-           break;
+    def play_audio(self):
+        if self.audio_list.currentItem():
+            audio_file = self.audio_list.currentItem().text()
+            self.player.play_audio(audio_file)
 
-    except:
-        print("Entrada inválida, tente novamente")
+    def pause_audio(self):
+        if self.player:
+            self.player.pause_audio()
+
+    def unpause_audio(self):
+        if self.player:
+            self.player.unpause_audio()
+
+    def update_play_progress(self, value):
+        self.play_progress.setValue(value)
+
+    def update_play_status(self, message):
+        self.play_status.setText(message)
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
