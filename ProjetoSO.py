@@ -5,7 +5,7 @@ import time
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QProgressBar, QLineEdit, QLabel, QListWidget, QMessageBox
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon
-from pytube import YouTube
+from pytubefix import YouTube
 from moviepy.editor import AudioFileClip
 import pygame
 
