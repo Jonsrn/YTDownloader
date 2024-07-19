@@ -20,15 +20,25 @@ class DownloadThread(QThread):
 
     def run(self):
         total = len(self.urls)
+        threads = []
         for i, url in enumerate(self.urls):
-            yt = YouTube(url)
-            video = yt.streams.get_highest_resolution()
-            self.status_message.emit(f"Baixando: {yt.title}")
-            video.download(self.output_path)
-            self.progresso.emit(int((i + 1) / total * 100))
+            thread = threading.Thread(target=self.download_video, args=(i, url, total))
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+
         self.status_message.emit("Download Concluído")
-        time.sleep(2)  # Espera 2 segundos com a barra cheia
-        self.progresso.emit(0)  # Reseta a barra de progresso
+        time.sleep(2)  
+        self.progresso.emit(0) 
+
+    def download_video(self, index, url, total):
+        yt = YouTube(url)
+        video = yt.streams.get_highest_resolution()
+        self.status_message.emit(f"Baixando: {yt.title}")
+        video.download(self.output_path)
+        self.progresso.emit(int((index + 1) / total * 100))
 
 class ConverterThread(QThread):
     progresso = pyqtSignal(int)
@@ -42,17 +52,27 @@ class ConverterThread(QThread):
     def run(self):
         videos = [f for f in os.listdir(self.input_path) if f.endswith('.mp4')]
         total = len(videos)
+        threads = []
         for i, video in enumerate(videos):
-            video_path = os.path.join(self.input_path, video)
-            audio_path = os.path.join(self.output_path, os.path.splitext(video)[0] + '.mp3')
-            self.status_message.emit(f"Convertendo: {video}")
-            audio_clip = AudioFileClip(video_path)
-            audio_clip.write_audiofile(audio_path)
-            os.remove(video_path)
-            self.progresso.emit(int((i + 1) / total * 100))
+            thread = threading.Thread(target=self.convert_video, args=(i, video, total))
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+
         self.status_message.emit("Conversão Concluída")
         time.sleep(2)  # Espera 2 segundos com a barra cheia
         self.progresso.emit(0)  # Reseta a barra de progresso
+
+    def convert_video(self, index, video, total):
+        video_path = os.path.join(self.input_path, video)
+        audio_path = os.path.join(self.output_path, os.path.splitext(video)[0] + '.mp3')
+        self.status_message.emit(f"Convertendo: {video}")
+        audio_clip = AudioFileClip(video_path)
+        audio_clip.write_audiofile(audio_path)
+        os.remove(video_path)
+        self.progresso.emit(int((index + 1) / total * 100))
 
 class Player(QThread):
     progress_update = pyqtSignal(int)
