@@ -1,4 +1,4 @@
-# Music Downloader v2.0 🎵
+# YTDownloader v2.0 🎵
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python)
 ![PyQt5](https://img.shields.io/badge/PyQt-5-green?style=for-the-badge&logo=qt)
